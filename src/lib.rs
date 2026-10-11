@@ -1,6 +1,8 @@
 pub mod app;
+pub mod approvals;
 pub mod config;
 pub mod messaging;
+pub mod progress;
 pub mod rpc;
 pub mod sessions;
 pub mod telegram;

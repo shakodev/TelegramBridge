@@ -1,10 +1,13 @@
 use crate::{
+    approvals::Approvals,
     config::Config,
     messaging::{self, Command},
+    progress::Progress,
     rpc::Rpc,
     sessions::Sessions,
     telegram::Outgoing,
     wire::Envelope,
+    wire::ServerMethod,
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::json;
@@ -16,6 +19,8 @@ pub struct App {
     pub sessions: Sessions,
     pub rpc: Rpc,
     pub outgoing: mpsc::Sender<Outgoing>,
+    pub approvals: Approvals,
+    pub progress: Progress,
 }
 impl App {
     pub fn say(&self, chat: i64, text: impl Into<String>) -> Result<()> {
@@ -23,10 +28,14 @@ impl App {
             .try_send(Outgoing {
                 chat,
                 text: text.into(),
+                ..Default::default()
             })
             .context("Telegram output queue is full")
     }
     pub async fn update(&mut self, update: Update) -> Result<()> {
+        if let UpdateKind::CallbackQuery(query) = &update.kind {
+            return self.callback(query).await;
+        }
         if let UpdateKind::Message(message) = update.kind {
             let Some(user) = message.from.as_ref() else {
                 return Ok(());
@@ -132,6 +141,8 @@ impl App {
                 }
                 .clone();
                 let turn = s.turn.context("Session has no active turn")?;
+                let pending = self.approvals.remove_where(|a| a.session == s.id);
+                self.deny(pending).await?;
                 self.rpc
                     .call("turn/interrupt", json!({"threadId":s.thread,"turnId":turn}))
                     .await?;
@@ -194,7 +205,56 @@ impl App {
     }
     pub async fn event(&mut self, message: Envelope) -> Result<()> {
         if let Some(id) = message.id {
-            self.rpc.reject(id).await?;
+            let method = message
+                .method
+                .as_deref()
+                .and_then(|m| serde_json::from_value::<ServerMethod>(json!(m)).ok());
+            let s = message.params["threadId"]
+                .as_str()
+                .and_then(|t| self.sessions.by_thread(t))
+                .cloned();
+            if let (Some(method), Some(s)) = (method, s) {
+                let item = message.params["itemId"]
+                    .as_str()
+                    .and_then(|i| self.progress.items.get(&(s.thread.clone(), i.into())));
+                match self.approvals.create(
+                    id.clone(),
+                    method,
+                    message.params,
+                    &s,
+                    item,
+                    self.config.approval_ttl,
+                ) {
+                    Ok(a) => {
+                        self.outgoing.try_send(Outgoing {
+                            chat: s.chat,
+                            text: a.details,
+                            approval: Some(a.token),
+                            ..Default::default()
+                        })?;
+                    }
+                    Err(e) => {
+                        let response = match method {
+                            ServerMethod::ItemPermissionsRequestApproval => {
+                                Some(json!({"permissions":{},"scope":"turn"}))
+                            }
+                            ServerMethod::ItemCommandExecutionRequestApproval
+                            | ServerMethod::ItemFileChangeRequestApproval => {
+                                Some(json!({"decision":"decline"}))
+                            }
+                            _ => None,
+                        };
+                        if let Some(result) = response {
+                            self.rpc.respond(id, result).await?;
+                        } else {
+                            self.rpc.reject(id).await?;
+                        }
+                        self.say(s.chat, format!("#{}: request denied: {}", s.id, e))?;
+                    }
+                }
+            } else {
+                self.rpc.reject(id).await?;
+            }
             return Ok(());
         }
         let p = message.params;
@@ -206,6 +266,31 @@ impl App {
             return Ok(());
         };
         match message.method.as_deref() {
+            Some("serverRequest/resolved") => {
+                if let Ok(id) = serde_json::from_value::<crate::wire::Id>(p["requestId"].clone()) {
+                    let removed = self
+                        .approvals
+                        .remove_where(|a| a.thread == s.thread && a.request == id);
+                    for a in removed {
+                        self.clear_button(&a)?;
+                    }
+                }
+            }
+            Some("item/agentMessage/delta")
+                if s.turn.is_some() && p["turnId"].as_str() == s.turn.as_deref() =>
+            {
+                if let Some(delta) = p["delta"].as_str() {
+                    self.progress.delta(s.id, delta);
+                }
+            }
+            Some("item/started")
+                if s.turn.is_some() && p["turnId"].as_str() == s.turn.as_deref() =>
+            {
+                self.progress.item(&s.thread, p["item"].clone());
+                if let Some(kind) = p["item"]["type"].as_str() {
+                    self.progress.delta(s.id, &format!("\n{kind}…\n"));
+                }
+            }
             Some("item/completed") if p["item"]["type"] == "agentMessage" => {
                 if p["turnId"].as_str() == s.turn.as_deref() {
                     if let Some(text) = p["item"]["text"].as_str() {
@@ -214,8 +299,27 @@ impl App {
                 }
             }
             Some("turn/completed") if p["turn"]["id"].as_str() == s.turn.as_deref() => {
+                let pending = self.approvals.remove_where(|a| a.session == s.id);
+                for a in pending {
+                    self.clear_button(&a)?;
+                }
+                self.progress.clear(&s.thread, s.id);
                 let status = p["turn"]["status"].as_str().unwrap_or("unknown");
-                self.say(s.chat, format!("#{}: {status}", s.id))?;
+                self.say(
+                    s.chat,
+                    format!(
+                        "#{}: {status}{}",
+                        s.id,
+                        if p["turn"]["error"].is_null() {
+                            String::new()
+                        } else {
+                            format!(
+                                "\n{}",
+                                messaging::preview(&p["turn"]["error"].to_string(), 2000)
+                            )
+                        }
+                    ),
+                )?;
                 let session = self.sessions.entries.get_mut(&s.id).unwrap();
                 session.turn = None;
                 session.status = status.into();
@@ -229,6 +333,106 @@ impl App {
                 ),
             )?,
             _ => {}
+        }
+        Ok(())
+    }
+    fn clear_button(&self, a: &crate::approvals::Approval) -> Result<()> {
+        if let Some(message) = a.message {
+            self.outgoing.try_send(Outgoing {
+                chat: a.chat,
+                clear: Some(message),
+                ..Default::default()
+            })?;
+        }
+        Ok(())
+    }
+    async fn deny(&self, approvals: Vec<crate::approvals::Approval>) -> Result<()> {
+        for a in approvals {
+            self.rpc.respond(a.request.clone(), a.result(false)).await?;
+            self.clear_button(&a)?;
+        }
+        Ok(())
+    }
+    pub async fn receipt(&mut self, receipt: crate::telegram::Receipt) -> Result<()> {
+        if let Some(message) = receipt.message {
+            self.approvals.bind(&receipt.token, message);
+        } else if let Some(a) = self.approvals.pending.remove(&receipt.token) {
+            self.deny(vec![a]).await?;
+        }
+        Ok(())
+    }
+    async fn callback(&mut self, query: &teloxide::types::CallbackQuery) -> Result<()> {
+        let Some(message) = query.regular_message() else {
+            return Ok(());
+        };
+        if query.from.is_bot
+            || !self.config.authorized(
+                query.from.id.0,
+                message.chat.id.0,
+                message.chat.is_private(),
+            )
+        {
+            return Ok(());
+        }
+        let data = query.data.as_deref().unwrap_or("");
+        let turn = data
+            .split_once(':')
+            .and_then(|(_, token)| self.approvals.pending.get(token))
+            .and_then(|a| self.sessions.entries.get(&a.session))
+            .and_then(|s| s.turn.clone());
+        let result = self.approvals.consume(
+            data,
+            query.from.id.0,
+            message.chat.id.0,
+            message.id.0,
+            turn.as_deref(),
+            std::time::Instant::now(),
+        );
+        let text = match result {
+            Ok((a, accept)) => {
+                self.rpc
+                    .respond(a.request.clone(), a.result(accept))
+                    .await?;
+                self.clear_button(&a)?;
+                if accept {
+                    "Approved this action"
+                } else {
+                    "Denied"
+                }
+                .to_owned()
+            }
+            Err(_) => "Invalid, expired, or already answered approval".into(),
+        };
+        self.outgoing.try_send(Outgoing {
+            chat: message.chat.id.0,
+            text,
+            callback: Some(query.id.0.clone()),
+            ..Default::default()
+        })?;
+        Ok(())
+    }
+    pub async fn tick(&mut self) -> Result<()> {
+        let now = std::time::Instant::now();
+        let expired = self.approvals.remove_where(|a| a.deadline <= now);
+        for a in &expired {
+            self.say(
+                a.chat,
+                format!("#{}: approval expired and was denied", a.session),
+            )?;
+        }
+        self.deny(expired).await?;
+        for (id, text) in self.progress.drain() {
+            if let Some(s) = self.sessions.entries.get(&id) {
+                if let Some(turn) = &s.turn {
+                    // Progress may be dropped under pressure; final output may not.
+                    let _ = self.outgoing.try_send(Outgoing {
+                        chat: s.chat,
+                        text,
+                        progress: Some(format!("{id}:{turn}")),
+                        ..Default::default()
+                    });
+                }
+            }
         }
         Ok(())
     }

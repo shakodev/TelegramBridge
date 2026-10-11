@@ -39,16 +39,22 @@ async fn main() -> Result<()> {
     let (updates_tx, mut updates) = mpsc::channel(64);
     let (outgoing, output_rx) = mpsc::channel(128);
     let poll = tokio::spawn(telegram::poll(bot.clone(), updates_tx));
-    let delivery = tokio::spawn(telegram::deliver(bot, output_rx));
+    let (receipt_tx, mut receipts) = mpsc::channel(128);
+    let delivery = tokio::spawn(telegram::deliver(bot, output_rx, receipt_tx));
     let mut app = App {
         config,
         sessions: Sessions::default(),
         rpc: connection.rpc.clone(),
         outgoing,
+        approvals: Default::default(),
+        progress: Default::default(),
     };
+    let mut tick = tokio::time::interval(Duration::from_secs(3));
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
+            _ = tick.tick() => app.tick().await?,
+            Some(receipt) = receipts.recv() => app.receipt(receipt).await?,
             Some(update) = updates.recv() => app.update(update).await?,
             event = connection.events.recv() => match event {
                 Some(Event::Message(message)) => app.event(message).await?,

@@ -28,7 +28,7 @@ wire enums/contracts over an enormous full-protocol generated dependency.
 - [x] 2. Telegram and sessions (requires 1). Environment config, private-chat ACL,
   project aliases, new/list/switch/resume/cancel commands, isolated prompt routing.
   Acceptance: compile; command, Unicode splitting, authorization and routing tests.
-- [ ] 3. Approvals and progress (requires 2). Command/file/permission details,
+- [x] 3. Approvals and progress (requires 2). Command/file/permission details,
   Approve/Deny callbacks bound to user/chat/message/turn/server generation, expiry,
   incremental output and final status. Acceptance: compile; denial, replay,
   cross-user, expired and stale-turn tests; no implicit approval path.
@@ -61,3 +61,10 @@ each milestone commit with evidence and remaining work. Do not commit credential
   owner-bound sessions and Unicode-safe plain-text Telegram delivery. Effective
   sandbox and human reviewer settings are checked before any prompt. Approval
   methods currently fail closed; interactive handling is the next milestone.
+- Milestone 3: 13 tests pass. Single-use random approval capabilities bind the
+  owner/chat/message/session/turn; expired, duplicate and stale buttons fail.
+  Commands, file diffs and permission JSON are displayed in full before buttons;
+  missing/oversize/unsupported details fail closed. Permission grants are scoped
+  to one turn; filesystem extensions must stay within the selected project.
+  Progress is coalesced every three seconds and edited in place. Final messages
+  remain separate, with explicit failed/interrupted status and error details.
