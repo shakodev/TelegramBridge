@@ -25,7 +25,7 @@ wire enums/contracts over an enormous full-protocol generated dependency.
 - [x] 1. App Server transport. Schema snapshot/code generation, initialize handshake,
   typed envelopes, request correlation, bounded frames/queues, timeout and EOF
   handling. Acceptance: compile; transport tests; real installed server handshake.
-- [ ] 2. Telegram and sessions (requires 1). Environment config, private-chat ACL,
+- [x] 2. Telegram and sessions (requires 1). Environment config, private-chat ACL,
   project aliases, new/list/switch/resume/cancel commands, isolated prompt routing.
   Acceptance: compile; command, Unicode splitting, authorization and routing tests.
 - [ ] 3. Approvals and progress (requires 2). Command/file/permission details,
@@ -56,3 +56,8 @@ each milestone commit with evidence and remaining work. Do not commit credential
   input/EOF, timeout, generated contract). `cargo run --locked` completed a real
   Codex 0.145.0 handshake using an isolated target/smoke-home, without inference.
   Native process execution needed sandbox escalation in this development host.
+- Milestone 2: `cargo test --locked` passes 9 tests. Implemented private-chat/user
+  ACL, canonical project aliases, new/list/switch/resume/cancel/status commands,
+  owner-bound sessions and Unicode-safe plain-text Telegram delivery. Effective
+  sandbox and human reviewer settings are checked before any prompt. Approval
+  methods currently fail closed; interactive handling is the next milestone.
