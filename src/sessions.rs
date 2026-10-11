@@ -16,6 +16,10 @@ pub struct Session {
     pub turn: Option<String>,
     pub loaded: bool,
     pub status: String,
+    #[serde(default)]
+    pub empty: bool,
+    #[serde(default)]
+    pub started: Option<i64>,
 }
 #[derive(Default, Serialize, Deserialize)]
 pub struct Sessions {
@@ -48,6 +52,8 @@ impl Sessions {
                 turn: None,
                 loaded: true,
                 status: "ready".into(),
+                empty: true,
+                started: None,
             },
         );
         self.selected.insert(owner, id);
@@ -80,6 +86,7 @@ impl Sessions {
     pub fn disconnected(&mut self) {
         for session in self.entries.values_mut() {
             session.loaded = false;
+            session.started = None;
             if session.turn.take().is_some() || session.status == "starting" {
                 session.status = "interrupted; outcome unknown; prompt not replayed".into();
             }

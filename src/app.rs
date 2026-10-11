@@ -158,6 +158,9 @@ impl App {
                 );
                 self.config.project(&s.project)?;
                 self.sessions.entries.get_mut(&id).unwrap().status = "starting".into();
+                self.sessions.entries.get_mut(&id).unwrap().empty = false;
+                self.sessions.entries.get_mut(&id).unwrap().started =
+                    Some(crate::store::unix_now());
                 self.outgoing.save_sessions(&self.sessions)?;
                 let response = self.rpc.call("turn/start",json!({"threadId":s.thread,"cwd":s.cwd,"input":[{"type":"text","text":text,"text_elements":[]}],"approvalPolicy":"untrusted","approvalsReviewer":"user","sandboxPolicy":self.config.sandbox_policy(&s.cwd)})).await;
                 match response {
@@ -192,16 +195,35 @@ impl App {
         );
         if !s.loaded {
             let mut params = self.config.thread_params(path);
-            params["threadId"] = json!(s.thread);
-            let response = self.rpc.call("thread/resume", params).await?;
+            if !s.empty {
+                params["threadId"] = json!(s.thread);
+            }
+            let response = self
+                .rpc
+                .call(
+                    if s.empty {
+                        "thread/start"
+                    } else {
+                        "thread/resume"
+                    },
+                    params,
+                )
+                .await?;
             if let Err(e) = self.config.validate_thread(&response, path) {
                 self.rpc.stop();
                 return Err(e);
             }
-            ensure!(
-                response["thread"]["id"] == s.thread,
-                "Unexpected resumed thread"
-            );
+            if s.empty {
+                self.sessions.entries.get_mut(&id).unwrap().thread = response["thread"]["id"]
+                    .as_str()
+                    .context("Missing replacement thread ID")?
+                    .into();
+            } else {
+                ensure!(
+                    response["thread"]["id"] == s.thread,
+                    "Unexpected resumed thread"
+                );
+            }
             self.sessions.entries.get_mut(&id).unwrap().loaded = true;
         }
         Ok(())
@@ -272,6 +294,19 @@ impl App {
         else {
             return Ok(());
         };
+        if message.method.as_deref() == Some("item/completed")
+            && let Some(item_id) = p["item"]["id"].as_str()
+        {
+            self.progress
+                .items
+                .remove(&(s.thread.clone(), item_id.into()));
+            let resolved = self
+                .approvals
+                .remove_where(|a| a.thread == s.thread && a.params["itemId"] == item_id);
+            for a in resolved {
+                self.clear_button(&a)?;
+            }
+        }
         match message.method.as_deref() {
             Some("serverRequest/resolved") => {
                 if let Ok(id) = serde_json::from_value::<crate::wire::Id>(p["requestId"].clone()) {
@@ -299,19 +334,28 @@ impl App {
                 }
             }
             Some("item/completed") if p["item"]["type"] == "agentMessage" => {
-                if p["turnId"].as_str() == s.turn.as_deref() {
-                    if let Some(text) = p["item"]["text"].as_str() {
-                        self.say(s.chat, format!("#{}: {}", s.id, text))?;
-                    }
+                if p["turnId"].as_str() == s.turn.as_deref()
+                    && let Some(text) = p["item"]["text"].as_str()
+                {
+                    self.say(s.chat, format!("#{}: {}", s.id, text))?;
                 }
             }
-            Some("turn/completed") if p["turn"]["id"].as_str() == s.turn.as_deref() => {
+            Some("turn/completed")
+                if s.turn.is_some() && p["turn"]["id"].as_str() == s.turn.as_deref() =>
+            {
                 let pending = self.approvals.remove_where(|a| a.session == s.id);
                 for a in pending {
                     self.clear_button(&a)?;
                 }
                 self.progress.clear(&s.thread, s.id);
                 let status = p["turn"]["status"].as_str().unwrap_or("unknown");
+                let _ = self.outgoing.enqueue(Outgoing {
+                    chat: s.chat,
+                    text: format!("#{}: {status}", s.id),
+                    progress: Some(format!("{}:{}", s.id, s.turn.as_deref().unwrap())),
+                    expires: Some(crate::store::unix_now() + 60),
+                    ..Default::default()
+                });
                 self.say(
                     s.chat,
                     format!(
@@ -329,6 +373,7 @@ impl App {
                 )?;
                 let session = self.sessions.entries.get_mut(&s.id).unwrap();
                 session.turn = None;
+                session.started = None;
                 session.status = status.into();
                 self.outgoing.save_sessions(&self.sessions)?;
             }
@@ -421,6 +466,41 @@ impl App {
         Ok(())
     }
     pub async fn tick(&mut self) -> Result<()> {
+        let overdue: Vec<_> = self
+            .sessions
+            .entries
+            .values()
+            .filter(|s| {
+                s.turn.is_some()
+                    && s.started.is_some_and(|t| {
+                        crate::store::unix_now() - t
+                            >= if s.status == "timeout" { 30 } else { 3600 }
+                    })
+            })
+            .cloned()
+            .collect();
+        for s in overdue {
+            if s.status == "timeout" {
+                self.rpc.stop();
+                return Ok(());
+            }
+            self.rpc
+                .call(
+                    "turn/interrupt",
+                    json!({"threadId":s.thread,"turnId":s.turn}),
+                )
+                .await?;
+            let state = self.sessions.entries.get_mut(&s.id).unwrap();
+            state.status = "timeout".into();
+            state.started = Some(crate::store::unix_now());
+            self.say(
+                s.chat,
+                format!(
+                    "#{}: one-hour turn limit reached; interrupt requested",
+                    s.id
+                ),
+            )?;
+        }
         let now = std::time::Instant::now();
         let expired = self.approvals.remove_where(|a| a.deadline <= now);
         for a in &expired {
@@ -431,17 +511,17 @@ impl App {
         }
         self.deny(expired).await?;
         for (id, text) in self.progress.drain() {
-            if let Some(s) = self.sessions.entries.get(&id) {
-                if let Some(turn) = &s.turn {
-                    // Progress may be dropped under pressure; final output may not.
-                    let _ = self.outgoing.enqueue(Outgoing {
-                        chat: s.chat,
-                        text,
-                        progress: Some(format!("{id}:{turn}")),
-                        expires: Some(crate::store::unix_now() + 30),
-                        ..Default::default()
-                    });
-                }
+            if let Some(s) = self.sessions.entries.get(&id)
+                && let Some(turn) = &s.turn
+            {
+                // Progress may be dropped under pressure; final output may not.
+                let _ = self.outgoing.enqueue(Outgoing {
+                    chat: s.chat,
+                    text,
+                    progress: Some(format!("{id}:{turn}")),
+                    expires: Some(crate::store::unix_now() + 30),
+                    ..Default::default()
+                });
             }
         }
         Ok(())

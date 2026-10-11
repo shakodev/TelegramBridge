@@ -16,6 +16,14 @@ use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec};
 pub const FRAME_LIMIT: usize = 2 * 1024 * 1024;
 pub const CAPACITY: usize = 128;
 #[derive(Debug)]
+pub struct Disconnected(pub &'static str);
+impl std::fmt::Display for Disconnected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+impl std::error::Error for Disconnected {}
+#[derive(Debug)]
 pub enum Event {
     Message(Envelope),
     Disconnected,
@@ -51,14 +59,17 @@ impl Rpc {
                     reply,
                 })
                 .await
-                .map_err(|_| anyhow!("Codex disconnected"))?;
-            rx.await.context("Codex disconnected")?
+                .map_err(|_| anyhow!(Disconnected("Codex disconnected")))?;
+            rx.await
+                .map_err(|_| anyhow!(Disconnected("Codex disconnected")))?
         };
         match tokio::time::timeout(self.timeout, operation).await {
             Ok(result) => result,
             Err(_) => {
                 self.stop();
-                bail!("Codex RPC timed out; connection closed, action was not retried")
+                bail!(Disconnected(
+                    "Codex RPC timed out; connection closed, action was not retried"
+                ))
             }
         }
     }
@@ -67,7 +78,7 @@ impl Rpc {
             Ok(Ok(())) => Ok(()),
             _ => {
                 self.stop();
-                bail!("Codex writer unavailable")
+                bail!(Disconnected("Codex writer unavailable"))
             }
         }
     }
@@ -87,7 +98,27 @@ impl Rpc {
 
 impl Connection {
     pub async fn spawn(executable: &Path, cwd: &Path, timeout: Duration) -> Result<Self> {
+        Self::spawn_with_home(executable, cwd, timeout, None).await
+    }
+    /// Explicit isolated Codex home, useful for embedding and credential-free protocol tests.
+    pub async fn spawn_with_home(
+        executable: &Path,
+        cwd: &Path,
+        timeout: Duration,
+        home: Option<&Path>,
+    ) -> Result<Self> {
+        #[cfg(windows)]
+        if executable
+            .extension()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| !s.eq_ignore_ascii_case("exe"))
+        {
+            bail!("CODEX_BIN must name a native .exe, not a shell script");
+        }
         let mut command = Command::new(executable);
+        if let Some(home) = home {
+            command.env("CODEX_HOME", home);
+        }
         command
             .args(["app-server", "--listen", "stdio://"])
             .current_dir(cwd)
@@ -155,13 +186,16 @@ where
                     let Some(Ok(line)) = line else { break };
                     let Ok(message) = serde_json::from_str::<Envelope>(&line) else { break };
                     if message.method.is_none() {
-                        if let Some(id) = message.id {
-                            if let Some(reply) = pending.remove(&id) {
+                        if let Some(id) = message.id
+                            && let Some(reply) = pending.remove(&id) {
                                 let result = match message.error { Some(e) => Err(anyhow!("Codex RPC error: {}", e)), None => Ok(message.result.unwrap_or(Value::Null)) };
                                 let _ = reply.send(result);
                             }
-                        }
-                    } else if event_tx.try_send(Event::Message(message)).is_err() { break; }
+                    } else {
+                        let disposable = message.id.is_none() && matches!(message.method.as_deref(),Some("item/agentMessage/delta" | "item/commandExecution/outputDelta"));
+                        if let Err(error) = event_tx.try_send(Event::Message(message))
+                            && !(disposable && matches!(error,mpsc::error::TrySendError::Full(_))) {break;}
+                    }
                 }
                 request = rx.recv() => {
                     let Some(request) = request else { break };
@@ -185,9 +219,9 @@ where
             }
         }
         for (_, reply) in pending {
-            let _ = reply.send(Err(anyhow!(
+            let _ = reply.send(Err(anyhow!(Disconnected(
                 "Codex disconnected; request outcome may be unknown"
-            )));
+            ))));
         }
         drop(rx);
         let _ = event_tx.try_send(Event::Disconnected);

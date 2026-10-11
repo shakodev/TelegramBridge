@@ -18,7 +18,9 @@ pub struct Config {
 }
 impl Config {
     pub fn from_env() -> Result<Self> {
-        dotenvy::dotenv().ok();
+        if Path::new(".env").exists() {
+            dotenvy::from_path(".env").context("Unable to load .env")?;
+        }
         let token = std::env::var("TELEGRAM_BOT_TOKEN").context("Set TELEGRAM_BOT_TOKEN")?;
         ensure!(!token.trim().is_empty(), "TELEGRAM_BOT_TOKEN is empty");
         let users = std::env::var("TELEGRAM_ALLOWED_USERS")

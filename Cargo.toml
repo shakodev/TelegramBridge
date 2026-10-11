@@ -29,6 +29,14 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 [dev-dependencies]
 tempfile = "3"
 
+[features]
+test-support = []
+
+[[bin]]
+name = "mock-codex"
+path = "tests/support/mock_codex.rs"
+required-features = ["test-support"]
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

@@ -51,7 +51,7 @@ each milestone commit with evidence and remaining work. Do not commit credential
 
 - Initial workspace contains only .gitignore; no existing implementation or graph.
 - Rust 1.97.1 and Codex 0.145.0 are installed. Cargo is outside the shell PATH.
-- Exported installed App Server JSON Schema; implementation has not started.
+- Exported installed App Server JSON Schema before implementation.
 - Milestone 1: `cargo test` passes 4 tests (multiplexing, server requests, malformed
   input/EOF, timeout, generated contract). `cargo run --locked` completed a real
   Codex 0.145.0 handshake using an isolated target/smoke-home, without inference.
@@ -60,7 +60,7 @@ each milestone commit with evidence and remaining work. Do not commit credential
   ACL, canonical project aliases, new/list/switch/resume/cancel/status commands,
   owner-bound sessions and Unicode-safe plain-text Telegram delivery. Effective
   sandbox and human reviewer settings are checked before any prompt. Approval
-  methods currently fail closed; interactive handling is the next milestone.
+  methods failed closed at this milestone, before interactive handling was added.
 - Milestone 3: 13 tests pass. Single-use random approval capabilities bind the
   owner/chat/message/session/turn; expired, duplicate and stale buttons fail.
   Commands, file diffs and permission JSON are displayed in full before buttons;
@@ -75,3 +75,16 @@ each milestone commit with evidence and remaining work. Do not commit credential
   A real Windows App Server handshake also passes with kill-on-close Job Object
   containment. Update submission is at-most-once; Telegram output is at-least-once
   across the unavoidable send/ack crash window. Stale approvals never recover.
+- Milestone 5 validation: 21 automated tests pass (15 unit, 5 external-process
+  integration, 1 real teloxide HTTP fixture). The opt-in real Codex 0.145.0 test
+  also passes: initialize, thread/start, streamed completed turn against a local
+  Responses SSE fixture, process restart, thread/resume, thread/list and effective
+  policy checks. It uses a temporary Codex home and no user credentials.
+- Live validation exposed that empty Codex threads have no persisted rollout.
+  Fixed restart recovery to recreate only never-prompted threads under the same
+  bridge session ID. Added expiry/watchdog regressions, typed transport recovery,
+  strict native executable validation and completed-item cache cleanup.
+- `cargo clippy --locked --all-targets --all-features -- -D warnings` passes.
+  Optimized Windows build succeeded; final artifact verification and documentation
+  commit remain. Cargo reports a future-compatibility warning in the upstream
+  `proc-macro-error2 2.0.1` dependency; it does not fail current builds or Clippy.

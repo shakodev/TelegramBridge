@@ -2,6 +2,7 @@
 #[cfg(windows)]
 pub struct ProcessGuard(windows_sys::Win32::Foundation::HANDLE);
 #[cfg(windows)]
+// SAFETY: a job HANDLE has no thread affinity; this type owns it exclusively.
 unsafe impl Send for ProcessGuard {}
 #[cfg(windows)]
 impl ProcessGuard {

@@ -94,34 +94,47 @@ async fn main() -> Result<()> {
     ));
     let mut tick = tokio::time::interval(Duration::from_secs(3));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let result:Result<()> = async {
+    let result: Result<()> = async {
         loop {
             tokio::select! {
-                _=tokio::signal::ctrl_c()=>break,
-                result=&mut poll=>{result.context("Telegram polling task crashed")??; anyhow::bail!("Telegram polling stopped");},
-                result=&mut delivery=>{result.context("Telegram delivery task crashed")??; anyhow::bail!("Telegram delivery stopped");},
-                Some(receipt)=receipts.recv()=>app.receipt(receipt).await?,
-                _=tick.tick()=>{
-                    if !app.rpc.is_closed() {app.tick().await?;}
+                _ = tokio::signal::ctrl_c() => break,
+                result = &mut poll => {
+                    result.context("Telegram polling task crashed")??;
+                    anyhow::bail!("Telegram polling stopped");
                 }
-                Some(incoming)=updates.recv()=>{
+                result = &mut delivery => {
+                    result.context("Telegram delivery task crashed")??;
+                    anyhow::bail!("Telegram delivery stopped");
+                }
+                Some(receipt) = receipts.recv() => recover_transport(app.receipt(receipt).await)?,
+                _ = tick.tick() => {
+                    if !app.rpc.is_closed() { recover_transport(app.tick().await)?; }
+                }
+                Some(incoming) = updates.recv() => {
                     if store.claim_update(incoming.update.id.0)? {
-                        app.update(incoming.update).await?;
+                        recover_transport(app.update(incoming.update).await)?;
                         store.save_sessions(&app.sessions)?;
                     }
-                    let _=incoming.ack.send(());
+                    let _ = incoming.ack.send(());
                 }
-                next=event(&mut connection)=>match next {
-                    Some(Event::Message(message))=>app.event(message).await?,
-                    _=>{
-                        if let Some(old)=connection.take() {old.shutdown().await;}
+                next = event(&mut connection) => match next {
+                    Some(Event::Message(message)) => recover_transport(app.event(message).await)?,
+                    _ => {
+                        if let Some(old) = connection.take() { old.shutdown().await; }
                         app.disconnected()?;
-                        reconnecting=Some(tokio::spawn(reconnect(executable.clone(),cwd.clone(),timeout)));
+                        reconnecting = Some(tokio::spawn(reconnect(executable.clone(),cwd.clone(),timeout)));
                     }
                 },
-                result=async {match &mut reconnecting {Some(task)=>task.await,None=>std::future::pending().await}}=>{
-                    let c=result.context("Codex reconnect task failed")?;
-                    app.rpc=c.rpc.clone(); connection=Some(c); reconnecting=None;
+                result = async {
+                    match &mut reconnecting {
+                        Some(task) => task.await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    let c = result.context("Codex reconnect task failed")?;
+                    app.rpc = c.rpc.clone();
+                    connection = Some(c);
+                    reconnecting = None;
                     tracing::info!("Codex connected; sessions will resume on demand");
                 }
             }
@@ -139,4 +152,14 @@ async fn main() -> Result<()> {
     }
     app.disconnected()?;
     result
+}
+
+fn recover_transport(result: Result<()>) -> Result<()> {
+    match result {
+        Err(error) if error.is::<telegram_codex_bridge::rpc::Disconnected>() => {
+            tracing::warn!("Codex transport lost; pending actions will not replay");
+            Ok(())
+        }
+        other => other,
+    }
 }

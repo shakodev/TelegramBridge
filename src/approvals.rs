@@ -281,6 +281,8 @@ mod tests {
                 turn: Some("v".into()),
                 loaded: true,
                 status: "running".into(),
+                empty: false,
+                started: None,
             },
             p,
         )

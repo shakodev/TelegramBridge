@@ -131,13 +131,13 @@ async fn send_job(
     let mut request = bot
         .send_message(ChatId(m.chat), text)
         .link_preview_options(previews());
-    if job.part + 1 == chunks.len() {
-        if let Some(token) = &m.approval {
-            request = request.reply_markup(InlineKeyboardMarkup::new([[
-                InlineKeyboardButton::callback("Approve", format!("a:{token}")),
-                InlineKeyboardButton::callback("Deny", format!("d:{token}")),
-            ]]));
-        }
+    if job.part + 1 == chunks.len()
+        && let Some(token) = &m.approval
+    {
+        request = request.reply_markup(InlineKeyboardMarkup::new([[
+            InlineKeyboardButton::callback("Approve", format!("a:{token}")),
+            InlineKeyboardButton::callback("Deny", format!("d:{token}")),
+        ]]));
     }
     Ok(Some(request.await?.id.0))
 }
@@ -180,13 +180,13 @@ pub async fn deliver(
                     }
                     progress.insert(key.clone(), id);
                 }
-                if store.advance(&job)? {
-                    if let Some(token) = job.message.approval {
-                        receipts
-                            .send(Receipt { token, message })
-                            .await
-                            .context("Receipt consumer stopped")?;
-                    }
+                if store.advance(&job)?
+                    && let Some(token) = job.message.approval
+                {
+                    receipts
+                        .send(Receipt { token, message })
+                        .await
+                        .context("Receipt consumer stopped")?;
                 }
             }
             Err(error) => {

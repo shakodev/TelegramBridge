@@ -43,6 +43,11 @@ impl Store {
         lock.try_lock()
             .context("Another bridge is already using this database")?;
         let db = Connection::open(path)?;
+        let version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        ensure!(
+            version <= 1,
+            "Database was created by a newer bridge; refusing to downgrade"
+        );
         db.busy_timeout(std::time::Duration::from_secs(2))?;
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA cache_size=-2048;
             CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
