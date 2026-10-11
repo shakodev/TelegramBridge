@@ -36,7 +36,7 @@ wire enums/contracts over an enormous full-protocol generated dependency.
   dedup/outbox state, restart supervision, safe interrupted-state recovery, retry
   and rate limits, bounded storage and graceful shutdown. Acceptance: compile;
   reopen/recovery, duplicate update, process failure and delivery retry tests.
-- [ ] 5. Full validation and delivery (requires 4). Deterministic integration harness,
+- [x] 5. Full validation and delivery (requires 4). Deterministic integration harness,
   live local App Server smoke test, Windows README and .env.example, format/clippy/
   test/release build. Acceptance: automated suite passes; exact live validation
   scope and any credential-dependent limitations are documented.
@@ -84,7 +84,17 @@ each milestone commit with evidence and remaining work. Do not commit credential
   Fixed restart recovery to recreate only never-prompted threads under the same
   bridge session ID. Added expiry/watchdog regressions, typed transport recovery,
   strict native executable validation and completed-item cache cleanup.
-- `cargo clippy --locked --all-targets --all-features -- -D warnings` passes.
-  Optimized Windows build succeeded; final artifact verification and documentation
-  commit remain. Cargo reports a future-compatibility warning in the upstream
+- `cargo fmt --check` and `cargo clippy --locked --all-targets --all-features --
+  -D warnings` pass. Final `cargo test --locked --all-features` passes 21 tests;
+  the installed-server lifecycle test passes separately with `--ignored`.
+  `cargo build --locked --release` succeeds; the 8,297,472-byte Windows executable
+  also passes `--check-codex` against the actual installed server.
+  Cargo reports a future-compatibility warning in the upstream
   `proc-macro-error2 2.0.1` dependency; it does not fail current builds or Clippy.
+- Delivered Windows README, .env.example, schema refresh tooling and Windows/Linux
+  CI configuration. Local execution was validated on Windows; CI has not been
+  run remotely. Live Telegram account delivery and hosted model inference were
+  not run because no bridge bot credentials were supplied. Local HTTP and real
+  App Server/loopback model tests cover the integration without those credentials.
+- All five milestones are complete. Runtime activation requires the operator to
+  fill the environment settings and configure Codex authentication as documented.
