@@ -22,7 +22,7 @@ wire enums/contracts over an enormous full-protocol generated dependency.
 
 ## Milestones (in dependency order)
 
-- [ ] 1. App Server transport. Schema snapshot/code generation, initialize handshake,
+- [x] 1. App Server transport. Schema snapshot/code generation, initialize handshake,
   typed envelopes, request correlation, bounded frames/queues, timeout and EOF
   handling. Acceptance: compile; transport tests; real installed server handshake.
 - [ ] 2. Telegram and sessions (requires 1). Environment config, private-chat ACL,
@@ -52,3 +52,7 @@ each milestone commit with evidence and remaining work. Do not commit credential
 - Initial workspace contains only .gitignore; no existing implementation or graph.
 - Rust 1.97.1 and Codex 0.145.0 are installed. Cargo is outside the shell PATH.
 - Exported installed App Server JSON Schema; implementation has not started.
+- Milestone 1: `cargo test` passes 4 tests (multiplexing, server requests, malformed
+  input/EOF, timeout, generated contract). `cargo run --locked` completed a real
+  Codex 0.145.0 handshake using an isolated target/smoke-home, without inference.
+  Native process execution needed sandbox escalation in this development host.
