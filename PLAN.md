@@ -32,7 +32,7 @@ wire enums/contracts over an enormous full-protocol generated dependency.
   Approve/Deny callbacks bound to user/chat/message/turn/server generation, expiry,
   incremental output and final status. Acceptance: compile; denial, replay,
   cross-user, expired and stale-turn tests; no implicit approval path.
-- [ ] 4. Persistence and recovery (requires 3). SQLite session/selection/update
+- [x] 4. Persistence and recovery (requires 3). SQLite session/selection/update
   dedup/outbox state, restart supervision, safe interrupted-state recovery, retry
   and rate limits, bounded storage and graceful shutdown. Acceptance: compile;
   reopen/recovery, duplicate update, process failure and delivery retry tests.
@@ -68,3 +68,10 @@ each milestone commit with evidence and remaining work. Do not commit credential
   to one turn; filesystem extensions must stay within the selected project.
   Progress is coalesced every three seconds and edited in place. Final messages
   remain separate, with explicit failed/interrupted status and error details.
+- Milestone 4: 15 tests pass, including SQLite reopen, exclusive instance lock,
+  update deduplication, interrupted-session recovery, chunk-level delivery resume
+  and independent-chat retry scheduling. WAL/FULL durability, bounded outbox,
+  dead-letter retention, lazy thread resume and exponential reconnect are in place.
+  A real Windows App Server handshake also passes with kill-on-close Job Object
+  containment. Update submission is at-most-once; Telegram output is at-least-once
+  across the unavoidable send/ack crash window. Stale approvals never recover.

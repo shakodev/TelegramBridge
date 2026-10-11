@@ -2,7 +2,7 @@
 name = "telegram-codex-bridge"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 license = "MIT"
 default-run = "telegram-codex-bridge"
 
@@ -22,6 +22,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [build-dependencies]
 serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }
 
 [dev-dependencies]
 tempfile = "3"

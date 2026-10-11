@@ -102,10 +102,13 @@ impl Connection {
         let mut child = command
             .spawn()
             .context("Unable to start Codex executable")?;
+        let process_guard = crate::process_guard::ProcessGuard::attach(&child)
+            .context("Unable to isolate Codex process tree")?;
         let stdout = child.stdout.take().unwrap();
         let stdin = child.stdin.take().unwrap();
         let (rpc, events, driver) = connect(stdout, stdin, timeout);
         let task = tokio::spawn(async move {
+            let _process_guard = process_guard;
             driver.await;
             let _ = child.kill().await;
             let _ = child.wait().await;

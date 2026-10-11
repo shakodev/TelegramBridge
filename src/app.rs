@@ -1,3 +1,4 @@
+use crate::store::Store;
 use crate::{
     approvals::Approvals,
     config::Config,
@@ -12,20 +13,19 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use serde_json::json;
 use teloxide::types::{Update, UpdateKind};
-use tokio::sync::mpsc;
 
 pub struct App {
     pub config: Config,
     pub sessions: Sessions,
     pub rpc: Rpc,
-    pub outgoing: mpsc::Sender<Outgoing>,
+    pub outgoing: Store,
     pub approvals: Approvals,
     pub progress: Progress,
 }
 impl App {
     pub fn say(&self, chat: i64, text: impl Into<String>) -> Result<()> {
         self.outgoing
-            .try_send(Outgoing {
+            .enqueue(Outgoing {
                 chat,
                 text: text.into(),
                 ..Default::default()
@@ -158,6 +158,7 @@ impl App {
                 );
                 self.config.project(&s.project)?;
                 self.sessions.entries.get_mut(&id).unwrap().status = "starting".into();
+                self.outgoing.save_sessions(&self.sessions)?;
                 let response = self.rpc.call("turn/start",json!({"threadId":s.thread,"cwd":s.cwd,"input":[{"type":"text","text":text,"text_elements":[]}],"approvalPolicy":"untrusted","approvalsReviewer":"user","sandboxPolicy":self.config.sandbox_policy(&s.cwd)})).await;
                 match response {
                     Ok(v) => {
@@ -171,6 +172,7 @@ impl App {
                         self.say(chat, format!("#{id}: working…"))?;
                     }
                     Err(e) => {
+                        self.rpc.stop();
                         self.sessions.entries.get_mut(&id).unwrap().status =
                             "start failed; outcome may be unknown".into();
                         return Err(e);
@@ -178,6 +180,7 @@ impl App {
                 }
             }
         }
+        self.outgoing.save_sessions(&self.sessions)?;
         Ok(())
     }
     pub async fn load(&mut self, id: u64) -> Result<()> {
@@ -226,10 +229,14 @@ impl App {
                     self.config.approval_ttl,
                 ) {
                     Ok(a) => {
-                        self.outgoing.try_send(Outgoing {
+                        self.outgoing.enqueue(Outgoing {
                             chat: s.chat,
                             text: a.details,
                             approval: Some(a.token),
+                            expires: Some(
+                                crate::store::unix_now()
+                                    + self.config.approval_ttl.as_secs() as i64,
+                            ),
                             ..Default::default()
                         })?;
                     }
@@ -323,6 +330,7 @@ impl App {
                 let session = self.sessions.entries.get_mut(&s.id).unwrap();
                 session.turn = None;
                 session.status = status.into();
+                self.outgoing.save_sessions(&self.sessions)?;
             }
             Some("error") => self.say(
                 s.chat,
@@ -338,7 +346,7 @@ impl App {
     }
     fn clear_button(&self, a: &crate::approvals::Approval) -> Result<()> {
         if let Some(message) = a.message {
-            self.outgoing.try_send(Outgoing {
+            self.outgoing.enqueue(Outgoing {
                 chat: a.chat,
                 clear: Some(message),
                 ..Default::default()
@@ -403,10 +411,11 @@ impl App {
             }
             Err(_) => "Invalid, expired, or already answered approval".into(),
         };
-        self.outgoing.try_send(Outgoing {
+        self.outgoing.enqueue(Outgoing {
             chat: message.chat.id.0,
             text,
             callback: Some(query.id.0.clone()),
+            expires: Some(crate::store::unix_now() + 20),
             ..Default::default()
         })?;
         Ok(())
@@ -425,15 +434,29 @@ impl App {
             if let Some(s) = self.sessions.entries.get(&id) {
                 if let Some(turn) = &s.turn {
                     // Progress may be dropped under pressure; final output may not.
-                    let _ = self.outgoing.try_send(Outgoing {
+                    let _ = self.outgoing.enqueue(Outgoing {
                         chat: s.chat,
                         text,
                         progress: Some(format!("{id}:{turn}")),
+                        expires: Some(crate::store::unix_now() + 30),
                         ..Default::default()
                     });
                 }
             }
         }
+        Ok(())
+    }
+    pub fn disconnected(&mut self) -> Result<()> {
+        self.approvals.pending.clear();
+        self.progress = Default::default();
+        self.outgoing.invalidate_transient()?;
+        for s in self.sessions.entries.values() {
+            if s.turn.is_some() || s.status == "starting" {
+                self.say(s.chat,format!("#{}: Codex disconnected. Turn outcome may be unknown. Prompts and approvals were not replayed. Resume with /resume {}.",s.id,s.id))?;
+            }
+        }
+        self.sessions.disconnected();
+        self.outgoing.save_sessions(&self.sessions)?;
         Ok(())
     }
 }
